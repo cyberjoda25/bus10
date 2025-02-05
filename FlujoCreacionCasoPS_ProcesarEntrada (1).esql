@@ -1,0 +1,234 @@
+BROKER SCHEMA com.diners.wscreacioncasosps
+
+DECLARE timeout, nombreCola, nomServiceConfig EXTERNAL CHARACTER '';
+
+DECLARE ns NAMESPACE 'http://www.dinersclub.com.ec/iib/soa/esb/clientes/consultas/ConsultaSociosWeb/IntegracionWSCreacionCasosPS';
+DECLARE ns30 NAMESPACE 'http://www.dinersclub.com.ec/2016/DinHeader';
+
+/* * Mapea la estructura de entrada. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+ * RETURNS: BOOLEAN . * */
+CREATE COMPUTE MODULE FlujoCreacionCasoPS_ProcesarEntrada
+	/* * Funcion que mapea la estructura de entrada. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+    * RETURNS: BOOLEAN . * */
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		DECLARE dinHeader REFERENCE TO Environment.Header.[ < ];
+		DECLARE dinBody REFERENCE TO Environment.Body.[ < ].dinBody;
+		
+		--CargarUDP
+		DECLARE referenciaConf REFERENCE TO Environment;
+		CALL diners.utilitarios.CargarServicioConfigurable(nomServiceConfig, referenciaConf);
+		DECLARE propiedades REFERENCE TO Environment.cache.service.{nomServiceConfig};
+		
+		--Manejo de Encriptacion
+		IF LENGTH(TRIM(COALESCE(dinBody.numTarjeta, ''))) > 0 THEN
+			DECLARE entidades CHARACTER  propiedades.entidadesKey;
+			DECLARE aplicacionID CHARACTER dinHeader.ns30:aplicacionID;
+			DECLARE nombreUDPKey CHARACTER '';
+			IF aplicacionID = 'CHATBOTWSP' THEN
+				DECLARE referencia REFERENCE TO Environment;
+				SET dinBody.numTarjeta = diners.utilitarios.encriptacion.desencriptar(dinBody.numTarjeta, referencia);
+			
+			--Validacion de encriptacion
+			ELSEIF CONTAINS(entidades, aplicacionID) THEN
+				SET nombreUDPKey = propiedades.{'key' || aplicacionID} ;
+				DECLARE referencia REFERENCE TO Environment;
+				
+				CREATE LASTCHILD OF Environment NAME 'Encriptacion';
+				DECLARE Encriptacion REFERENCE TO Environment.Encriptacion;  
+			
+			    SET Encriptacion.nomServiceConfig  	= nombreUDPKey;
+				SET Encriptacion.Encriptar			= 'D';
+				SET Encriptacion.llaveSimetrica		= dinHeader.ns30:llaveSimetrica;
+				
+				--Se crea carpeta de Datos para la encriptacion
+				CREATE LASTCHILD OF Environment.Encriptacion.listaDatos NAME 'Datos';
+				SET Encriptacion.listaDatos.[ < ].valor = dinBody.numTarjeta;
+				
+				CALL diners.utilitarios.encriptacion.EncriptacionEntidad(referencia);
+				SET dinBody.numTarjeta = Environment.Encriptacion.listaDatos.Datos[ 1 ].datoDesencriptado;
+			END IF;
+		END IF;
+		
+		--Se inicializan variables de ambiente
+		SET Environment.hayError = 0;
+		SET Environment.totalPag = 0;
+		SET Environment.validarError = 0;
+		
+		CREATE LASTCHILD OF Environment NAME 'root';
+		DECLARE rotear REFERENCE TO Environment.root;  
+			
+		--Colocar entrada
+		DECLARE tipoTransaccion CHARACTER Environment.tipoTransaccion;
+		
+		IF UPPER(tipoTransaccion) = 'S' THEN
+			CREATE LASTCHILD OF Environment NAME 'FlujosSOAP';
+			DECLARE FlujosSOAP REFERENCE TO Environment.FlujosSOAP;  
+		
+			SET FlujosSOAP.URL = propiedades.url;
+			SET FlujosSOAP.SOAPAction = propiedades.action;
+			SET FlujosSOAP.Timeout = timeout;
+			SET Environment.DatosServicio.nsWSSoap = propiedades.nameSpace;
+			
+			DECLARE nsSoap NAMESPACE Environment.DatosServicio.nsWSSoap;
+			DECLARE soapIn REFERENCE TO Environment;
+			CREATE LASTCHILD OF Environment.FlujosSOAP.Input AS soapIn NAMESPACE nsSoap NAME propiedades.contenedorRequest;
+			
+			--Se mapea los datos de entrada
+			SET soapIn.CodigoOperacion = 'NEW';
+			SET soapIn.SetID = '';
+			SET soapIn.CaseID = '';
+			SET soapIn.DescripcionOpt = dinBody.codAplicacion || '|' || dinBody.codTransaccion;
+			SET soapIn.TemplateID = '';
+			SET soapIn.NumeroIdentificacion = dinBody.numDocumento;
+			SET soapIn.TipoIdentificacion = dinBody.tipoDocumento;
+			SET soapIn.CodAplicacion = COALESCE(dinBody.codAplicacion, '');
+			SET soapIn.TipIdentificacion2 = '';
+			SET soapIn.CaseType = '';
+			SET soapIn.CaseSubtype = '';
+			SET soapIn.CodCategoria = '';
+			SET soapIn.CodEspecialidad = '';
+			SET soapIn.CodDetalle = '';
+			SET soapIn.DescripcionCaso = COALESCE(dinBody.descMensaje, '');
+			SET soapIn.DescripcionContacto = '';
+			SET soapIn.MetodoContacto = '';
+			SET soapIn.DireccionEmail = '';
+			--Se mapea los datos de entrada
+			SET soapIn.CodEntidad = '';
+			SET soapIn.CodMarca = '';
+			SET soapIn.NumeroCuenta = COALESCE(dinBody.numCuenta, '');
+			SET soapIn.NumeroTarjeta = COALESCE(dinBody.numTarjeta, '');
+			SET soapIn.IdentificLlamada = '';
+			SET soapIn.EstadoCaso = COALESCE(dinBody.estadoCaso, '');
+			SET soapIn.DetallePdf = '';
+			SET soapIn.FechaLlamada = '';
+			SET soapIn.HoraLlamada = '';
+			
+			SET rotear.tipoTransaccion = 'S';
+		ELSE
+			CREATE LASTCHILD OF Environment NAME 'FlujosMQ';
+			DECLARE FlujosMQ REFERENCE TO Environment.FlujosMQ;  
+			
+			--Se mapea los datos de la cola
+			SET FlujosMQ.NombreCola = nombreCola;
+			SET FlujosMQ.Entrada = dinBody;
+			
+			SET rotear.tipoTransaccion = 'A';
+		END IF;
+
+		RETURN TRUE;
+	END;
+END MODULE;
+
+/* * Mapea la estructura de salida. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+ * RETURNS: BOOLEAN . * */
+CREATE COMPUTE MODULE FlujoCreacionCasoPS_ProcesarSalida
+	/* * Funcion que mapea la estructura de salida. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+    * RETURNS: BOOLEAN . * */
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		
+		DECLARE tipoTransaccion CHARACTER Environment.tipoTransaccion;
+		
+		IF tipoTransaccion IS NULL OR UPPER(tipoTransaccion) = 'A' THEN
+			IF Environment.FlujosMQ.Salida.codError = '0' THEN
+				DECLARE fecha CHARACTER '';
+				DECLARE hora CHARACTER '';
+				SET fecha = CAST(CURRENT_DATE AS CHARACTER FORMAT 'yyyyMMdd');
+				SET hora = CAST(CURRENT_TIME AS CHARACTER FORMAT 'HHmmss');
+				
+				--Se obtiene las variables del sistema
+				DECLARE salidaWS REFERENCE TO Environment;
+				CREATE LASTCHILD OF Environment AS salidaWS NAME 'responsebody';
+			
+				--Se mapea la respuesta
+				SET salidaWS.codigoRespuesta = '0';
+				SET salidaWS.descripcionError = '';
+				SET salidaWS.codigoCaso = '01';
+				SET salidaWS.identificacionCliente = Environment.entrada.body.dinBody.numDocumento;
+				SET salidaWS.descMensaje = '';
+				SET salidaWS.fecha = fecha;
+				SET salidaWS.hora = hora;
+			ELSE
+				--Se mapea el error
+				SET Environment.hayError = 1;
+				SET Environment.codigo = Environment.FlujosMQ.Salida.codError;
+				SET Environment.descripcion = Environment.FlujosMQ.Salida.descError;
+				SET Environment.fecha = CURRENT_TIMESTAMP;
+				SET Environment.tipoError = 'N';
+			END IF;
+		ELSE
+			IF Environment.FlujosSOAP.salida.codError = '0' THEN
+				DECLARE propiedades REFERENCE TO Environment.cache.service.{nomServiceConfig};
+				DECLARE nomMetodo CHARACTER propiedades.objetoRespuesta;
+		
+				SET Environment.DatosServicio.nsWsPs = FIELDNAMESPACE(Environment.FlujosSOAP.salida.Body.[ < ]);
+				DECLARE soapOut REFERENCE TO Environment.FlujosSOAP.salida.Body.{nomMetodo};
+				
+				--Se mapea la respuesta
+				IF soapOut.CodigoRespuesta = '000' THEN
+						--Se obtiene las variables del sistema
+					DECLARE salidaWS REFERENCE TO Environment;
+					CREATE LASTCHILD OF Environment AS salidaWS NAME 'responsebody';
+				
+					SET salidaWS.codigoRespuesta = soapOut.CodigoRespuesta;
+					SET salidaWS.descripcionError = soapOut.DescripcionError;
+					SET salidaWS.codigoCaso = soapOut.CodigoCaso;
+					SET salidaWS.identificacionCliente = soapOut.IdentificacionCliente;
+					SET salidaWS.descMensaje = soapOut.descMensaje;
+					SET salidaWS.fecha = soapOut.Fecha;
+					SET salidaWS.hora = soapOut.Hora;
+				ELSE
+					--Se mapea el error
+					SET Environment.hayError = 1;
+					SET Environment.codigo = soapOut.CodigoRespuesta;
+					SET Environment.descripcion = soapOut.DescripcionError;
+					SET Environment.fecha = CURRENT_TIMESTAMP;
+					SET Environment.tipoError = 'N';
+				END IF;
+			ELSE
+				SET Environment.hayError = 1;
+				SET Environment.codigo = Environment.FlujosSOAP.salida.codError;
+				SET Environment.descripcion = Environment.FlujosSOAP.salida.descError;
+				SET Environment.fecha = CURRENT_TIMESTAMP;
+				SET Environment.tipoError = 'N';
+			END IF;
+		END IF;
+		 
+		RETURN TRUE;
+	END;
+END MODULE;
+
+/* * Funcion que mapea la estructura de error. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+    * RETURNS: BOOLEAN . * */
+CREATE COMPUTE MODULE FlujoCreacionCasoPS_MapearError
+	/* * Funcion que mapea la estructura de error. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+    * RETURNS: BOOLEAN . * */
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		SET Environment.hayError = 3;
+		
+		RETURN TRUE;
+	END;
+END MODULE;
+
+/* * Funcion que mapea la estructura de salida. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+    * RETURNS: BOOLEAN . * */
+CREATE COMPUTE MODULE FlujoCreacionCasoPS_MapearSalida
+	/* * Funcion que mapea la estructura de salida. * Parameters: * IN: REFERENCE InputRoot - arbol que contiene los datos de entrada. 
+    * RETURNS: BOOLEAN . * */
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		IF FIELDNAME(Environment.Header) IS NOT NULL THEN
+			DECLARE headerCall REFERENCE TO Environment.Header;
+			CALL diners.header.comun.MappingHeader(headerCall, 1);
+			SET OutputRoot.SOAP.Header = headerCall;
+		END IF;
+		
+		--Se mapea la salida
+		SET OutputRoot.SOAP.Body.ns:FlujoCreacionCasoPSResponse.dinBody = Environment.responsebody;
+		SET OutputRoot.SOAP.Body.ns:FlujoCreacionCasoPSResponse.dinError = Environment.error;
+		 
+		RETURN TRUE;
+	END;
+END MODULE;
